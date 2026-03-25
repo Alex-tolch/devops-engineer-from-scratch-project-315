@@ -1,0 +1,117 @@
+---
+- name: Configure Docker and firewall
+  hosts: VM
+  become: true
+  vars:
+    docker_users:
+      - alex
+    docker_apt_arch: >-
+      {{
+        'amd64' if ansible_architecture == 'x86_64'
+        else ('arm64' if ansible_architecture == 'aarch64' else ansible_architecture)
+      }}
+    docker_apt_distro: "{{ 'ubuntu' if ansible_distribution == 'Ubuntu' else 'debian' }}"
+
+  pre_tasks:
+    - name: Assert Ubuntu or Debian
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution in ['Ubuntu', 'Debian']
+        fail_msg: This playbook supports Ubuntu and Debian only.
+
+  tasks:
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Install packages for Docker repository
+      ansible.builtin.apt:
+        name:
+          - ca-certificates
+          - curl
+          - gnupg
+        state: present
+
+    - name: Ensure apt keyrings directory exists
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: "0755"
+
+    - name: Download Docker GPG key
+      ansible.builtin.get_url:
+        url: "https://download.docker.com/linux/{{ docker_apt_distro }}/gpg"
+        dest: /etc/apt/keyrings/docker.asc
+        mode: "0644"
+
+    - name: Add Docker apt repository
+      ansible.builtin.apt_repository:
+        repo: >-
+          deb [arch={{ docker_apt_arch }} signed-by=/etc/apt/keyrings/docker.asc]
+          https://download.docker.com/linux/{{ docker_apt_distro }}
+          {{ ansible_distribution_release }} stable
+        filename: docker
+        state: present
+
+    - name: Install Docker Engine, CLI, containerd, buildx, and compose plugin
+      ansible.builtin.apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-compose-plugin
+        state: present
+        update_cache: true
+
+    - name: Ensure Docker service is started and enabled
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Add users to docker group
+      ansible.builtin.user:
+        name: "{{ item }}"
+        groups: docker
+        append: true
+      loop: "{{ docker_users }}"
+
+    - name: Install helper utilities
+      ansible.builtin.apt:
+        name:
+          - git
+          - jq
+          - unzip
+        state: present
+
+    - name: Install UFW
+      ansible.builtin.apt:
+        name: ufw
+        state: present
+
+    - name: Allow SSH before enabling UFW
+      community.general.ufw:
+        rule: allow
+        port: "22"
+        proto: tcp
+
+    - name: Allow HTTP and HTTPS
+      community.general.ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+      loop:
+        - "80"
+        - "443"
+
+    - name: Set default incoming policy to deny
+      community.general.ufw:
+        default: deny
+        direction: incoming
+
+    - name: Enable UFW
+      community.general.ufw:
+        state: enabled
+

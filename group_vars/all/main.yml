@@ -1,0 +1,6 @@
+---
+app_image_tag: latest
+app_image: "ghcr.io/alex-tolch/project-devops-deploy:{{ app_image_tag }}"
+app_rollback_image: ghcr.io/alex-tolch/project-devops-deploy:60319c2
+app_container_name: project-devops-deploy
+app_backfill_bulletin_s3_images: true

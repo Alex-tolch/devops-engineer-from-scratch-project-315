@@ -1,0 +1,154 @@
+---
+- name: Install Python Docker SDK on target host
+  ansible.builtin.apt:
+    name: python3-docker
+    state: present
+
+- name: Assert PostgreSQL password is set when database role is enabled
+  ansible.builtin.assert:
+    that:
+      - postgres_password | default('') | length > 0
+    fail_msg: Set postgres_password in vault
+  when: app_postgres_enabled | bool
+
+- name: Ensure application base directory exists
+  ansible.builtin.file:
+    path: "{{ app_base_path }}"
+    state: directory
+    mode: "0755"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+
+- name: Ensure data, logs, and PostgreSQL data directories exist
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+  loop:
+    - "{{ app_data_dir }}"
+    - "{{ app_logs_dir }}"
+    - "{{ postgres_data_dir }}"
+
+- name: Log in to container registry
+  community.docker.docker_login:
+    registry_url: "{{ app_registry_host }}"
+    username: "{{ app_registry_username }}"
+    password: "{{ app_registry_password }}"
+  when:
+    - app_registry_username | default('') | length > 0
+    - app_registry_password | default('') | length > 0
+
+- name: Create Docker network for application stack
+  community.docker.docker_network:
+    name: "{{ app_docker_network }}"
+    state: present
+
+- name: Run PostgreSQL container
+  community.docker.docker_container:
+    name: "{{ postgres_container_name }}"
+    image: "{{ postgres_image }}"
+    state: started
+    pull: true
+    restart_policy: unless-stopped
+    env:
+      POSTGRES_USER: "{{ postgres_user }}"
+      POSTGRES_PASSWORD: "{{ postgres_password }}"
+      POSTGRES_DB: "{{ postgres_db }}"
+    volumes:
+      - "{{ postgres_data_dir }}:/var/lib/postgresql/data"
+    networks:
+      - name: "{{ app_docker_network }}"
+    comparisons:
+      image: strict
+      env: strict
+      volumes: strict
+      networks: strict
+  when: app_postgres_enabled | bool
+
+- name: Wait for PostgreSQL to accept connections
+  ansible.builtin.command: docker exec {{ postgres_container_name }} pg_isready -U {{ postgres_user }} -d {{ postgres_db }}
+  register: pg_ready
+  until: pg_ready.rc == 0
+  retries: "{{ postgres_retry_count | int }}"
+  delay: "{{ postgres_retry_delay | int }}"
+  changed_when: false
+  when: app_postgres_enabled | bool
+
+- name: Merge base environment from inventory and vault
+  ansible.builtin.set_fact:
+    app_env_effective: "{{ app_env | combine(app_env_secrets | default({}), recursive=True) }}"
+
+- name: Inject Spring DataSource env when Postgres container is used
+  ansible.builtin.set_fact:
+    app_env_effective: >-
+      {{
+        app_env_effective | combine({
+          'SPRING_DATASOURCE_URL': 'jdbc:postgresql://' + postgres_host + ':' + (postgres_port | string) + '/' + postgres_db,
+          'SPRING_DATASOURCE_USERNAME': postgres_user,
+          'SPRING_DATASOURCE_PASSWORD': postgres_password,
+        }, recursive=True)
+      }}
+  when:
+    - app_postgres_enabled | bool
+    - app_merge_database_url | bool
+
+- name: Build volume mount list
+  ansible.builtin.set_fact:
+    app_container_volumes:
+      - "{{ app_data_dir }}:{{ app_volume_data_mount }}"
+      - "{{ app_logs_dir }}:{{ app_volume_logs_mount }}"
+
+- name: Run application container with primary image
+  block:
+    - name: Run application container (primary image)
+      community.docker.docker_container:
+        name: "{{ app_container_name }}"
+        image: "{{ app_image }}"
+        state: started
+        pull: true
+        restart_policy: unless-stopped
+        published_ports: "{{ app_publish_ports }}"
+        networks:
+          - name: "{{ app_docker_network }}"
+        env: "{{ app_env_effective }}"
+        volumes: "{{ app_container_volumes }}"
+        comparisons:
+          image: strict
+          env: strict
+          published_ports: strict
+          volumes: strict
+          networks: strict
+
+  rescue:
+    - name: Primary image deploy failed, use rollback image
+      ansible.builtin.debug:
+        msg: "Deploy with {{ app_image }} failed; trying {{ app_rollback_image }}"
+
+    - name: Run application container (rollback image)
+      community.docker.docker_container:
+        name: "{{ app_container_name }}"
+        image: "{{ app_rollback_image }}"
+        state: started
+        pull: true
+        restart_policy: unless-stopped
+        published_ports: "{{ app_publish_ports }}"
+        networks:
+          - name: "{{ app_docker_network }}"
+        env: "{{ app_env_effective }}"
+        volumes: "{{ app_container_volumes }}"
+        comparisons:
+          image: strict
+          env: strict
+          published_ports: strict
+          volumes: strict
+          networks: strict
+
+- name: Backfill bulletin images to S3-compatible storage (optional)
+  ansible.builtin.include_tasks: seed_s3_bulletin_images.yml
+  vars:
+    app_backfill_s3_upload_script: "{{ role_path }}/files/upload_bulletin_s3_object.py"
+  when:
+    - app_backfill_bulletin_s3_images | bool
+    - app_postgres_enabled | bool

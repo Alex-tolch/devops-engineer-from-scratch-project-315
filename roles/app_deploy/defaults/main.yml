@@ -1,0 +1,50 @@
+---
+app_internal_port: 8080
+app_publish_ports:
+  - "80:{{ app_internal_port }}"
+
+app_base_path: /srv/{{ app_container_name }}
+app_data_dir: "{{ app_base_path }}/data"
+app_logs_dir: "{{ app_base_path }}/logs"
+postgres_data_dir: "{{ app_base_path }}/postgres-data"
+
+app_volume_data_mount: /app/data
+app_volume_logs_mount: /app/logs
+
+app_docker_network: project-devops-net
+
+postgres_container_name: project-devops-postgres
+postgres_host: "{{ postgres_container_name }}"
+postgres_port: 5432
+postgres_image: postgres:16-alpine
+postgres_user: app
+postgres_db: app
+postgres_password: ""
+postgres_retry_count: 30
+postgres_retry_delay: 2
+
+app_postgres_enabled: true
+app_merge_database_url: true
+
+app_migration_command:
+  - java
+  - -jar
+  - /app/app.jar
+  - --spring.main.web-application-type=none
+
+app_env:
+  SPRING_PROFILES_ACTIVE: prod
+
+app_env_secrets: {}
+
+app_registry_host: ghcr.io
+app_registry_username: ""
+app_registry_password: ""
+
+app_backfill_bulletin_s3_images: false
+app_backfill_bulletin_s3_wait_retries: 40
+app_backfill_bulletin_s3_wait_delay: 3
+app_backfill_s3_sample_count: 10
+app_backfill_s3_sample_base_url: >-
+  https://raw.githubusercontent.com/Alex-tolch/project-devops-deploy/main/src/main/resources/sample_images
+app_backfill_s3_local_cache_dir: "/tmp/ansible-bulletin-s3-seed-{{ inventory_hostname }}"

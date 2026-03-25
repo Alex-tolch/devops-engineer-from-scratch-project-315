@@ -1,0 +1,3 @@
+group_vars/all/vault.yml
+.vault_pass
+hosts

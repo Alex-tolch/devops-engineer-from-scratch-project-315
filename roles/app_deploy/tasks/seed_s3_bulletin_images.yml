@@ -1,0 +1,103 @@
+---
+# Uploads JPEG bytes for each distinct image_key in Postgres to S3-compatible storage
+# using the same keys (no SQL updates). Runs on the Ansible controller (python3 + boto3).
+# Custom endpoints use path-style SigV4 (works with GCS interoperability).
+# Enable with app_backfill_bulletin_s3_images: true and STORAGE_S3_* in app_env_secrets.
+
+- name: Derive S3 settings for bulletin image backfill from merged app env
+  ansible.builtin.set_fact:
+    app_backfill_s3_bucket: "{{ app_env_effective.STORAGE_S3_BUCKET | default('', true) }}"
+    app_backfill_s3_region: "{{ app_env_effective.STORAGE_S3_REGION | default('us-east-1', true) }}"
+    app_backfill_s3_endpoint: "{{ app_env_effective.STORAGE_S3_ENDPOINT | default('', true) | trim }}"
+    app_backfill_s3_access_key: "{{ app_env_effective.STORAGE_S3_ACCESSKEY | default('', true) }}"
+    app_backfill_s3_secret_key: "{{ app_env_effective.STORAGE_S3_SECRETKEY | default('', true) }}"
+
+- name: Require object storage variables when backfill is enabled
+  ansible.builtin.assert:
+    that:
+      - app_backfill_s3_bucket | length > 0
+      - app_backfill_s3_access_key | length > 0
+      - app_backfill_s3_secret_key | length > 0
+    fail_msg: >-
+      Set STORAGE_S3_BUCKET, STORAGE_S3_ACCESSKEY, STORAGE_S3_SECRETKEY in app_env_secrets (vault),
+      or set app_backfill_bulletin_s3_images to false.
+
+- name: Verify boto3 is available on Ansible controller
+  ansible.builtin.command: python3 -c "import boto3"
+  delegate_to: localhost
+  vars:
+    ansible_connection: local
+  become: false
+  changed_when: false
+
+- name: Wait for bulletin rows (application seed may run after container start)
+  ansible.builtin.command: >-
+    docker exec {{ postgres_container_name }} psql -U {{ postgres_user }} -d {{ postgres_db }}
+    -t -A -c "SELECT COUNT(*) FROM bulletins;"
+  register: bulletin_seed_wait
+  until: (bulletin_seed_wait.stdout | default('0') | trim | int) > 0
+  retries: "{{ app_backfill_bulletin_s3_wait_retries | int }}"
+  delay: "{{ app_backfill_bulletin_s3_wait_delay | int }}"
+  changed_when: false
+  failed_when: false
+
+- name: List distinct bulletin image_key values from Postgres
+  ansible.builtin.command: >-
+    docker exec {{ postgres_container_name }} psql -U {{ postgres_user }} -d {{ postgres_db }}
+    -t -A -c "SELECT DISTINCT image_key FROM bulletins
+    WHERE image_key IS NOT NULL AND trim(image_key) <> '' ORDER BY 1;"
+  register: bulletin_image_keys_query
+  changed_when: false
+
+- name: Build list of object keys to upload
+  ansible.builtin.set_fact:
+    bulletin_image_keys_list: >-
+      {{ bulletin_image_keys_query.stdout_lines | default([])
+      | map('trim') | list | reject('equalto', '') | list }}
+
+- name: Ensure local cache directory for seed JPEGs (controller)
+  ansible.builtin.file:
+    path: "{{ app_backfill_s3_local_cache_dir }}"
+    state: directory
+    mode: "0755"
+  delegate_to: localhost
+  vars:
+    ansible_connection: local
+  become: false
+
+- name: Download sample bulletin JPEGs from application repository (controller)
+  ansible.builtin.get_url:
+    url: "{{ app_backfill_s3_sample_base_url }}/{{ item }}.jpg"
+    dest: "{{ app_backfill_s3_local_cache_dir }}/{{ item }}.jpg"
+    mode: "0644"
+    force: false
+  loop: "{{ range(1, app_backfill_s3_sample_count | int + 1) | list }}"
+  delegate_to: localhost
+  vars:
+    ansible_connection: local
+  become: false
+
+- name: Upload bulletin images to bucket using existing DB keys (boto3 path-style for GCS interop)
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ app_backfill_s3_upload_script }}"
+      - "{{ app_backfill_s3_bucket }}"
+      - "{{ item }}"
+      - "{{ app_backfill_s3_local_cache_dir }}/{{ ((bulletin_image_upload_idx % (app_backfill_s3_sample_count | int)) + 1) }}.jpg"
+      - "{{ app_backfill_s3_endpoint }}"
+      - "{{ app_backfill_s3_region }}"
+  environment:
+    AWS_ACCESS_KEY_ID: "{{ app_backfill_s3_access_key }}"
+    AWS_SECRET_ACCESS_KEY: "{{ app_backfill_s3_secret_key }}"
+    AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+    AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+  loop: "{{ bulletin_image_keys_list }}"
+  loop_control:
+    index_var: bulletin_image_upload_idx
+    label: "{{ item }}"
+  delegate_to: localhost
+  vars:
+    ansible_connection: local
+  become: false
+  when: bulletin_image_keys_list | length > 0
