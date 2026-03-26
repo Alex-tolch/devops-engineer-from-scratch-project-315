@@ -2,7 +2,7 @@
 galaxy_info:
   role_name: app_deploy
   author: project
-  description: Pull registry image and run app container with volumes
+  description: Docker app stack, optional Nginx reverse proxy and static/uploads tuning
   license: MIT
   min_ansible_version: "2.14"
 dependencies: []

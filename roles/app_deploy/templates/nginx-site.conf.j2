@@ -1,0 +1,116 @@
+# {{ ansible_managed }}
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    {# '_' catch-all avoids missing Host / odd clients during ACME HTTP-01 #}
+    server_name {% if app_tls_enabled | bool and (app_tls_domain | default('') | length > 0) %}{{ app_tls_domain }} _{% else %}_{% endif %};
+
+    client_max_body_size 32m;
+
+    {% if app_tls_enabled | bool %}
+    # ^~ stops regex locations (e.g. *.js) from stealing ACME paths
+    location ^~ /.well-known/acme-challenge/ {
+        root {{ app_tls_webroot }};
+        default_type "text/plain";
+    }
+    {% endif %}
+
+    {% if app_tls_enabled | bool and app_tls_cert_files_present | bool %}
+    location / {
+        return 301 https://$host$request_uri;
+    }
+    {% else %}
+    # Public files on disk (same host tree as the app container bind mount).
+    location /{{ app_nginx_uploads_subdir }}/ {
+        alias {{ app_data_dir }}/{{ app_nginx_uploads_subdir }}/;
+        expires 7d;
+        add_header Cache-Control "public";
+        access_log off;
+    }
+
+    # Cache GET/HEAD of typical static assets from the Spring Boot app.
+    location ~* \.(?:css|js|mjs|map|jpg|jpeg|png|gif|ico|svg|webp|woff2?|ttf|eot)$ {
+        proxy_pass http://{{ app_container_publish_host }}:{{ app_container_publish_port }};
+        proxy_http_version 1.1;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $http_host;
+        proxy_set_header X-Forwarded-Port $server_port;
+
+        proxy_cache app_cache;
+        proxy_cache_valid 200 301 302 10m;
+        proxy_cache_methods GET HEAD;
+        proxy_cache_key "$scheme$request_method$host$request_uri";
+        add_header X-Cache-Status $upstream_cache_status;
+    }
+
+    location / {
+        proxy_pass http://{{ app_container_publish_host }}:{{ app_container_publish_port }};
+        proxy_http_version 1.1;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $http_host;
+        proxy_set_header X-Forwarded-Port $server_port;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+    }
+    {% endif %}
+}
+
+{% if app_tls_enabled | bool and app_tls_cert_files_present | bool %}
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name {{ app_tls_domain }};
+
+    client_max_body_size 32m;
+
+    ssl_certificate {{ app_tls_cert_path }};
+    ssl_certificate_key {{ app_tls_key_path }};
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers on;
+    ssl_ciphers ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
+    location /{{ app_nginx_uploads_subdir }}/ {
+        alias {{ app_data_dir }}/{{ app_nginx_uploads_subdir }}/;
+        expires 7d;
+        add_header Cache-Control "public";
+        access_log off;
+    }
+
+    location ~* \.(?:css|js|mjs|map|jpg|jpeg|png|gif|ico|svg|webp|woff2?|ttf|eot)$ {
+        proxy_pass http://{{ app_container_publish_host }}:{{ app_container_publish_port }};
+        proxy_http_version 1.1;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $http_host;
+        proxy_set_header X-Forwarded-Port $server_port;
+
+        proxy_cache app_cache;
+        proxy_cache_valid 200 301 302 10m;
+        proxy_cache_methods GET HEAD;
+        proxy_cache_key "$scheme$request_method$host$request_uri";
+        add_header X-Cache-Status $upstream_cache_status;
+    }
+
+    location / {
+        proxy_pass http://{{ app_container_publish_host }}:{{ app_container_publish_port }};
+        proxy_http_version 1.1;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $http_host;
+        proxy_set_header X-Forwarded-Port $server_port;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+    }
+}
+{% endif %}

@@ -28,6 +28,7 @@
     group: "{{ ansible_user }}"
   loop:
     - "{{ app_data_dir }}"
+    - "{{ app_data_dir }}/{{ app_nginx_uploads_subdir }}"
     - "{{ app_logs_dir }}"
     - "{{ postgres_data_dir }}"
 
@@ -152,3 +153,7 @@
   when:
     - app_backfill_bulletin_s3_images | bool
     - app_postgres_enabled | bool
+
+- name: Install and configure Nginx reverse proxy
+  ansible.builtin.include_tasks: nginx.yml
+  when: app_nginx_enabled | bool

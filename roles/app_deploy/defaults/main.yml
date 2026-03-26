@@ -1,7 +1,23 @@
 ---
 app_internal_port: 8080
+app_container_publish_host: "127.0.0.1"
+app_container_publish_port: 8080
 app_publish_ports:
-  - "80:{{ app_internal_port }}"
+  - "{{ app_container_publish_host }}:{{ app_container_publish_port }}:{{ app_internal_port }}"
+
+app_nginx_enabled: true
+app_nginx_site_name: project-devops
+app_nginx_cache_zone_size: 10m
+app_nginx_cache_max_size: 256m
+app_nginx_cache_inactive: 60m
+app_tls_enabled: false
+app_tls_domain: ""
+app_tls_email: ""
+app_tls_webroot: /var/www/certbot
+app_tls_cert_path: "/etc/letsencrypt/live/{{ app_tls_domain }}/fullchain.pem"
+app_tls_key_path: "/etc/letsencrypt/live/{{ app_tls_domain }}/privkey.pem"
+app_certbot_use_ppa_on_ubuntu: true
+app_certbot_binary: /usr/bin/certbot
 
 app_base_path: /srv/{{ app_container_name }}
 app_data_dir: "{{ app_base_path }}/data"
@@ -26,12 +42,6 @@ postgres_retry_delay: 2
 app_postgres_enabled: true
 app_merge_database_url: true
 
-app_migration_command:
-  - java
-  - -jar
-  - /app/app.jar
-  - --spring.main.web-application-type=none
-
 app_env:
   SPRING_PROFILES_ACTIVE: prod
 
@@ -48,3 +58,4 @@ app_backfill_s3_sample_count: 10
 app_backfill_s3_sample_base_url: >-
   https://raw.githubusercontent.com/Alex-tolch/project-devops-deploy/main/src/main/resources/sample_images
 app_backfill_s3_local_cache_dir: "/tmp/ansible-bulletin-s3-seed-{{ inventory_hostname }}"
+app_nginx_uploads_subdir: uploads
