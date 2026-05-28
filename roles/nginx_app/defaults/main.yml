@@ -1,0 +1,25 @@
+---
+app_nginx_site_name: project-devops
+app_nginx_cache_zone_size: 10m
+app_nginx_cache_max_size: 256m
+app_nginx_cache_inactive: 60m
+app_nginx_uploads_subdir: uploads
+
+app_tls_enabled: false
+app_tls_domain: ""
+app_tls_email: ""
+app_tls_webroot: /var/www/certbot
+app_tls_cert_path: "/etc/letsencrypt/live/{{ app_tls_domain }}/fullchain.pem"
+app_tls_key_path: "/etc/letsencrypt/live/{{ app_tls_domain }}/privkey.pem"
+
+nginx_remove_default_vhost: true
+nginx_service_state: started
+nginx_service_enabled: true
+
+app_certbot_use_ppa_on_ubuntu: true
+app_certbot_binary: /usr/bin/certbot
+
+certbot_auto_renew: true
+certbot_create_if_missing: false
+certbot_renewal_services:
+  - nginx

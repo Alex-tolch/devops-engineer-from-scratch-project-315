@@ -1,0 +1,8 @@
+---
+galaxy_info:
+  role_name: nginx_app
+  author: project
+  description: Nginx reverse proxy, TLS via geerlingguy.nginx and geerlingguy.certbot
+  license: MIT
+  min_ansible_version: "2.14"
+dependencies: []

@@ -1,43 +1,22 @@
 ---
-- name: Install Nginx
-  ansible.builtin.apt:
-    name: nginx
-    state: present
-    update_cache: true
-
-- name: Ensure Nginx proxy cache directory exists
-  ansible.builtin.file:
-    path: /var/cache/nginx/app
-    state: directory
-    owner: www-data
-    group: www-data
-    mode: "0750"
-
-- name: Install prerequisites for Certbot PPA on Ubuntu
-  ansible.builtin.apt:
-    name: software-properties-common
-    state: present
-  when:
-    - app_tls_enabled | bool
-    - app_certbot_use_ppa_on_ubuntu | bool
-    - ansible_distribution == "Ubuntu"
-
-- name: Add Certbot PPA on Ubuntu (newer Certbot fixes Py3.11+ AttributeError bug)
-  ansible.builtin.apt_repository:
-    repo: ppa:certbot/certbot
-    state: present
-    update_cache: true
-  when:
-    - app_tls_enabled | bool
-    - app_certbot_use_ppa_on_ubuntu | bool
-    - ansible_distribution == "Ubuntu"
-
-- name: Install latest Certbot
-  ansible.builtin.apt:
-    name: certbot
-    state: latest
-    update_cache: true
+- name: Check current TLS certificate files
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  register: nginx_app_tls_cert_stat
+  loop:
+    - "{{ app_tls_cert_path }}"
+    - "{{ app_tls_key_path }}"
   when: app_tls_enabled | bool
+
+- name: Mark TLS readiness from existing cert files
+  ansible.builtin.set_fact:
+    app_tls_cert_files_present: "{{ (nginx_app_tls_cert_stat.results | map(attribute='stat.exists') | list | min) | default(false) }}"
+  when: app_tls_enabled | bool
+
+- name: Mark TLS readiness disabled when TLS is off
+  ansible.builtin.set_fact:
+    app_tls_cert_files_present: false
+  when: not (app_tls_enabled | bool)
 
 - name: Ensure ACME webroot and challenge directories exist
   ansible.builtin.file:
@@ -52,24 +31,17 @@
     - "{{ app_tls_webroot }}/.well-known/acme-challenge"
   when: app_tls_enabled | bool
 
-- name: Check current TLS certificate files
-  ansible.builtin.stat:
-    path: "{{ item }}"
-  register: app_tls_cert_stat
-  loop:
-    - "{{ app_tls_cert_path }}"
-    - "{{ app_tls_key_path }}"
-  when: app_tls_enabled | bool
+- name: Ensure Nginx proxy cache directory exists
+  ansible.builtin.file:
+    path: /var/cache/nginx/app
+    state: directory
+    owner: www-data
+    group: www-data
+    mode: "0750"
 
-- name: Mark TLS readiness from existing cert files
-  ansible.builtin.set_fact:
-    app_tls_cert_files_present: "{{ (app_tls_cert_stat.results | map(attribute='stat.exists') | list | min) | default(false) }}"
-  when: app_tls_enabled | bool
-
-- name: Mark TLS readiness disabled when TLS is off
-  ansible.builtin.set_fact:
-    app_tls_cert_files_present: false
-  when: not (app_tls_enabled | bool)
+- name: Install and configure Nginx (geerlingguy.nginx)
+  ansible.builtin.include_role:
+    name: geerlingguy.nginx
 
 - name: Deploy Nginx proxy_cache_path snippet
   ansible.builtin.template:
@@ -92,12 +64,6 @@
     mode: "0644"
   notify: Reload nginx
 
-- name: Disable default Nginx site
-  ansible.builtin.file:
-    path: /etc/nginx/sites-enabled/default
-    state: absent
-  notify: Reload nginx
-
 - name: Enable application Nginx site
   ansible.builtin.file:
     src: "/etc/nginx/sites-available/{{ app_nginx_site_name }}.conf"
@@ -109,12 +75,6 @@
 - name: Validate Nginx configuration
   ansible.builtin.command: nginx -t
   changed_when: false
-
-- name: Ensure Nginx is enabled and running
-  ansible.builtin.service:
-    name: nginx
-    state: started
-    enabled: true
 
 - name: Reload Nginx so ACME webroot is active before certbot
   ansible.builtin.meta: flush_handlers
@@ -135,9 +95,43 @@
     fail_msg: Set app_tls_domain in inventory when app_tls_enabled is true.
   when: app_tls_enabled | bool
 
+- name: Install prerequisites for Certbot PPA on Ubuntu
+  ansible.builtin.apt:
+    name: software-properties-common
+    state: present
+  when:
+    - app_tls_enabled | bool
+    - app_certbot_use_ppa_on_ubuntu | bool
+    - ansible_distribution == "Ubuntu"
+
+- name: Add Certbot PPA on Ubuntu (newer Certbot fixes Py3.11+ AttributeError bug)
+  ansible.builtin.apt_repository:
+    repo: ppa:certbot/certbot
+    state: present
+    update_cache: true
+  when:
+    - app_tls_enabled | bool
+    - app_certbot_use_ppa_on_ubuntu | bool
+    - ansible_distribution == "Ubuntu"
+
+- name: Upgrade Certbot from PPA on Ubuntu
+  ansible.builtin.apt:
+    name: certbot
+    state: latest
+    update_cache: true
+  when:
+    - app_tls_enabled | bool
+    - app_certbot_use_ppa_on_ubuntu | bool
+    - ansible_distribution == "Ubuntu"
+
+- name: Install Certbot auto-renewal (geerlingguy.certbot)
+  ansible.builtin.include_role:
+    name: geerlingguy.certbot
+  when: app_tls_enabled | bool
+
 - name: Build certbot email args
   ansible.builtin.set_fact:
-    app_certbot_email_args: >-
+    nginx_app_certbot_email_args: >-
       {{
         ['--email', app_tls_email]
         if (app_tls_email | default('') | length > 0)
@@ -146,7 +140,7 @@
       }}
   when: app_tls_enabled | bool
 
-- name: Request/renew Let's Encrypt certificate (webroot)
+- name: Request Let's Encrypt certificate (webroot)
   ansible.builtin.command:
     argv: >-
       {{
@@ -158,9 +152,13 @@
           '--non-interactive',
           '--agree-tos',
           '--keep-until-expiring'
-        ] + app_certbot_email_args
+        ] + nginx_app_certbot_email_args
       }}
-  changed_when: true
+  register: nginx_app_certbot_run
+  changed_when:
+    - nginx_app_certbot_run.rc == 0
+    - nginx_app_certbot_run.stdout is not search('Certificate not yet due for renewal')
+  failed_when: nginx_app_certbot_run.rc not in [0]
   when:
     - app_tls_enabled | bool
     - not (app_tls_cert_files_present | bool)
@@ -168,7 +166,7 @@
 - name: Re-check TLS certificate files after certbot
   ansible.builtin.stat:
     path: "{{ item }}"
-  register: app_tls_cert_stat_after
+  register: nginx_app_tls_cert_stat_after
   loop:
     - "{{ app_tls_cert_path }}"
     - "{{ app_tls_key_path }}"
@@ -176,24 +174,7 @@
 
 - name: Mark TLS readiness after certbot
   ansible.builtin.set_fact:
-    app_tls_cert_files_present: "{{ (app_tls_cert_stat_after.results | map(attribute='stat.exists') | list | min) | default(false) }}"
-  when: app_tls_enabled | bool
-
-- name: Install certbot deploy hook for Nginx reload
-  ansible.builtin.copy:
-    dest: /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
-    mode: "0755"
-    content: |
-      #!/bin/sh
-      set -eu
-      systemctl reload nginx
-  when: app_tls_enabled | bool
-
-- name: Ensure certbot timer is enabled and running
-  ansible.builtin.service:
-    name: certbot.timer
-    state: started
-    enabled: true
+    app_tls_cert_files_present: "{{ (nginx_app_tls_cert_stat_after.results | map(attribute='stat.exists') | list | min) | default(false) }}"
   when: app_tls_enabled | bool
 
 - name: Re-deploy Nginx site for final HTTP/HTTPS mode

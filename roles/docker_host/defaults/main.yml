@@ -1,0 +1,8 @@
+---
+docker_edition: ce
+docker_install_compose_plugin: true
+docker_users:
+  - "{{ ansible_user }}"
+
+# Python Docker SDK for community.docker modules during deploy (replaces removed app_deploy apt task).
+docker_host_python_docker_package: python3-docker

@@ -1,0 +1,20 @@
+---
+ufw_policy_incoming: deny
+ufw_policy_outgoing: allow
+ufw_logging: "on"
+ufw_rules:
+  - rule: allow
+    direction: in
+    protocol: tcp
+    to_port: "22"
+    comment: SSH
+  - rule: allow
+    direction: in
+    protocol: tcp
+    to_port: "80"
+    comment: HTTP
+  - rule: allow
+    direction: in
+    protocol: tcp
+    to_port: "443"
+    comment: HTTPS
