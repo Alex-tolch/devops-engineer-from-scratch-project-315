@@ -19,6 +19,7 @@ Install collections and roles from `requirements.yml`:
 ansible-galaxy install -r requirements.yml
 ```
 
+
 Galaxy roles used:
 
 - **geerlingguy.docker** — Docker CE (via `roles/docker_host`)
